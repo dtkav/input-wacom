@@ -595,9 +595,11 @@ static void wacom_intuos_general(struct wacom_wac *wacom)
 			t = (t << 1) | (data[1] & 1);
 		}
 		input_report_abs(input, ABS_PRESSURE, t);
-		input_report_abs(input, ABS_TILT_X,
-				((data[7] << 1) & 0x7e) | (data[8] >> 7));
-		input_report_abs(input, ABS_TILT_Y, data[8] & 0x7f);
+		if (features->type != INTUOSHT2) {
+			input_report_abs(input, ABS_TILT_X,
+						(((data[7] << 1) & 0x7e) | (data[8] >> 7)) - 64);
+			input_report_abs(input, ABS_TILT_Y, (data[8] & 0x7f) - 64);
+		}
 		input_report_key(input, BTN_STYLUS, data[1] & 2);
 		input_report_key(input, BTN_STYLUS2, data[1] & 4);
 		input_report_key(input, BTN_TOUCH, t > 10);
@@ -625,6 +627,7 @@ static int wacom_intuos_irq(struct wacom_wac *wacom)
 	    data[0] != WACOM_REPORT_INTUOSREAD &&
 	    data[0] != WACOM_REPORT_INTUOSWRITE &&
 	    data[0] != WACOM_REPORT_INTUOSPAD &&
+	    data[0] != WACOM_REPORT_INTUOS_PEN &&
 	    data[0] != WACOM_REPORT_CINTIQ &&
 	    data[0] != WACOM_REPORT_CINTIQPAD &&
 	    data[0] != WACOM_REPORT_INTUOS5PAD) {
@@ -1291,7 +1294,7 @@ static void wacom_bpt3_touch_msg(struct wacom_wac *wacom, unsigned char *data)
 		int y = (data[3] << 4) | (data[4] & 0x0f);
 		int width, height;
 
-		if (features->type >= INTUOSPS && features->type <= INTUOSPL) {
+		if (features->type >= INTUOSPS && features->type <= INTUOSHT2) {
 			width  = data[5] * 100;
 			height = data[6] * 100;
 		} else {
@@ -1319,7 +1322,7 @@ static void wacom_bpt3_button_msg(struct wacom_wac *wacom, unsigned char *data)
 	struct input_dev *input = wacom->input;
 	struct wacom_features *features = &wacom->features;
 
-	if (features->type == INTUOSHT) {
+	if (features->type == INTUOSHT || features->type == INTUOSHT2) {
 		input_report_key(input, BTN_LEFT, (data[1] & 0x02) != 0);
 		input_report_key(input, BTN_BACK, (data[1] & 0x08) != 0);
 	} else {
@@ -1430,7 +1433,12 @@ static int wacom_bpt_pen(struct wacom_wac *wacom)
 
 static int wacom_bpt_irq(struct wacom_wac *wacom, size_t len)
 {
-	if (len == WACOM_PKGLEN_BBTOUCH)
+	struct wacom_features *features = &wacom->features;
+
+	if ((features->type == INTUOSHT2) &&
+		(wacom->data[0] == WACOM_REPORT_INTUOS_PEN))
+			return wacom_intuos_irq(wacom);
+	else if (len == WACOM_PKGLEN_BBTOUCH)
 		return wacom_bpt_touch(wacom);
 	else if (len == WACOM_PKGLEN_BBTOUCH3)
 		return wacom_bpt3_touch(wacom);
@@ -1452,7 +1460,8 @@ static int wacom_wireless_irq(struct wacom_wac *wacom, size_t len)
 	if (connected) {
 		int pid, battery, charging;
 
-		if ((wacom->shared->type == INTUOSHT) &&
+		if ((wacom->shared->type == INTUOSHT ||
+		    wacom->shared->type == INTUOSHT2) &&
 		    wacom->shared->touch_input &&
 		    wacom->shared->touch_max) {
 			input_report_switch(wacom->shared->touch_input,
@@ -1490,7 +1499,8 @@ static int wacom_status_irq(struct wacom_wac *wacom_wac, size_t len)
 	if (data[0] != WACOM_REPORT_USB)
 		return 0;
 
-	if (features->type == INTUOSHT &&
+	if ((features->type == INTUOSHT ||
+	    features->type == INTUOSHT) &&
 	    wacom_wac->shared->touch_input &&
 	    features->touch_max) {
 		input_report_switch(wacom_wac->shared->touch_input,
@@ -1603,6 +1613,7 @@ void wacom_wac_irq(struct wacom_wac *wacom_wac, size_t len)
 
 	case BAMBOO_PT:
 	case INTUOSHT:
+	case INTUOSHT2:
 		if (wacom_wac->data[0] == WACOM_REPORT_USB)
 			sync = wacom_status_irq(wacom_wac, len);
 		else
@@ -2018,6 +2029,7 @@ int wacom_setup_input_capabilities(struct input_dev *input_dev,
 		break;
 
 	case INTUOSHT:
+	case INTUOSHT2:
 		if (features->touch_max &&
 		    features->device_type == BTN_TOOL_FINGER) {
 			input_dev->evbit[0] |= BIT_MASK(EV_SW);
@@ -2556,6 +2568,9 @@ static const struct wacom_features wacom_features_0x30C =
 static const struct wacom_features wacom_features_0x323 =
 	{ "Wacom Intuos P M",      WACOM_PKGLEN_BBPEN,    21600, 13500, 1023,
 	  31, INTUOSHT, WACOM_INTUOS_RES, WACOM_INTUOS_RES };
+static const struct wacom_features wacom_features_0x33B =
+    { "Wacom Intuos S 2",      WACOM_PKGLEN_BBPEN,    15200, 9500, 2047,
+      63, INTUOSHT2, WACOM_INTUOS_RES, WACOM_INTUOS_RES };
 
 #define USB_DEVICE_WACOM(prod)					\
 	USB_DEVICE(USB_VENDOR_ID_WACOM, prod),			\
@@ -2715,6 +2730,7 @@ const struct usb_device_id wacom_ids[] = {
 	{ USB_DEVICE_WACOM(0x333) },
 	{ USB_DEVICE_WACOM(0x335) },
 	{ USB_DEVICE_WACOM(0x336) },
+	{ USB_DEVICE_WACOM(0x33B) },
 	{ USB_DEVICE_LENOVO(0x6004) },
 	{ }
 };
